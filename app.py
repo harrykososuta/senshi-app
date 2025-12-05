@@ -2,12 +2,13 @@ import streamlit as st
 import cv2
 import numpy as np
 import av
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
+# WebRtcMode を追加インポート
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
 
 # --- UI設定 ---
 st.set_page_config(page_title="穿刺ガイドシミュレータ", layout="wide")
 st.title("💉 穿刺ガイドシミュレータ (クラウド対応版)")
-st.caption("Ver 1.0 - Python 3.9 Compatible")
+st.caption("Ver 1.1 - Fixed Mode & Connection")
 
 # --- サイドバー設定 ---
 
@@ -96,7 +97,6 @@ class NeedleGuideSimulator(VideoProcessorBase):
                     bx1, by1, bx2, by2 = best_line[0]
                     
                     # 針先判定: 画面の下側(yが大きい方)を根本、上側を針先と仮定する簡易ロジック
-                    # ※実際は手元がどちらかによるが、ここではY座標が小さい方をTipとする
                     if by1 < by2: 
                         tip = (bx1, by1); tail = (bx2, by2)
                     else: 
@@ -137,8 +137,8 @@ class NeedleGuideSimulator(VideoProcessorBase):
             return av.VideoFrame.from_ndarray(img, format="bgr24")
 
         except Exception as e:
-            # エラーが起きてもストリームを止めない
-            print(f"Error: {e}")
+            # エラーが起きてもストリームを止めない（コンソールには出す）
+            print(f"Error processing frame: {e}")
             return frame
 
 # --- メイン実行部 ---
@@ -151,7 +151,7 @@ RTC_CONFIGURATION = RTCConfiguration(
 # Streamlit UIへの配置
 ctx = webrtc_streamer(
     key="needle-cloud-mode",
-    mode="sendrecv",
+    mode=WebRtcMode.SENDRECV, # <--- 【重要修正】文字列ではなくEnumを使用
     rtc_configuration=RTC_CONFIGURATION,
     video_processor_factory=NeedleGuideSimulator,
     media_stream_constraints={"video": video_constraints, "audio": False},
