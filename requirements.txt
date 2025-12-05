@@ -3,4 +3,3 @@ streamlit-webrtc
 opencv-python-headless
 numpy
 av
-python-3.9
