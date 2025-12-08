@@ -2,17 +2,14 @@ import streamlit as st
 import cv2
 import numpy as np
 import av
-import time
-import pandas as pd # グラフ描画用
+import pandas as pd
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
 
 # --- UI設定 ---
-st.set_page_config(page_title="穿刺ガイド - スコアリングモード", layout="wide")
-st.title("💉 穿刺ガイド - スコアリング＆記録")
-st.caption("Ver 5.0 - Test & Score Mode")
+st.set_page_config(page_title="穿刺ガイド - 実践モード", layout="centered") # スマホで見やすいようcenteredに変更
+st.title("💉 穿刺ガイド - 実践テストモード")
 
-# --- 通信設定 (Metered.ca または Google) ---
-# ※ここに前回の Metered.ca の設定を入れてください
+# --- 通信設定 ---
 TURN_USERNAME = "【ここにusername】"
 TURN_PASSWORD = "【ここにpassword】"
 
@@ -20,7 +17,7 @@ RTC_CONFIGURATION = RTCConfiguration(
     {
         "iceServers": [
             {"urls": ["stun:stun.l.google.com:19302"]},
-            # Meteredの設定があればコメントアウトを外して使う
+            # Metered設定がある場合はコメントアウトを外す
             # {
             #     "urls": ["turn:global.turn.metered.ca:80", "turn:global.turn.metered.ca:443"],
             #     "username": TURN_USERNAME,
@@ -30,42 +27,37 @@ RTC_CONFIGURATION = RTCConfiguration(
     }
 )
 
-# --- サイドバー設定 ---
-st.sidebar.header("⚙️ 設定")
-
-# 1. 認識設定
-st.sidebar.subheader("🎥 認識・カメラ")
+# --- サイドバー設定（調整項目のみ） ---
+st.sidebar.header("⚙️ 調整")
+st.sidebar.subheader("🎥 認識設定")
 roi_size = st.sidebar.slider("検出枠サイズ (%)", 10, 100, 40)
 threshold = st.sidebar.slider("検出感度", 30, 150, 50)
-camera_mode = st.sidebar.radio("カメラ向き", ("自分側", "外側"), index=1)
-if camera_mode == "自分側":
-    video_constraints = {"facingMode": "user", "width": {"ideal": 640}, "height": {"ideal": 480}}
-else:
-    video_constraints = {"facingMode": "environment", "width": {"ideal": 640}, "height": {"ideal": 480}}
+flip_tip = st.sidebar.checkbox("針先の向きを反転", value=False, help="ガイド線が逆に出る場合はチェックしてください")
 
-# 2. テスト設定
-st.sidebar.markdown("---")
 st.sidebar.subheader("🧪 テスト基準")
-target_angle = st.sidebar.number_input("目標角度 (度)", 20.0, 50.0, 30.0, step=1.0)
-st.sidebar.caption(f"目標: {target_angle}度 をキープしてください")
+target_angle = st.sidebar.number_input("目標角度 (度)", 10.0, 60.0, 30.0, step=1.0)
+guide_len_mm = st.sidebar.slider("ガイド線の長さ (mm)", 1.0, 10.0, 5.0, step=0.5)
 
 # --- 映像処理クラス ---
 class NeedleGuideSimulator(VideoProcessorBase):
     def __init__(self):
-        # 設定値
         self.roi_percent = 40
         self.threshold = 50
         self.target_angle = 30.0
+        self.flip_tip = False
+        self.guide_len_mm = 5.0
         
-        # 状態管理
         self.is_recording = False
-        self.angle_history = [] # テスト中の角度データ
-        self.last_frame = None  # 静止画保存用
+        self.angle_history = []
+        self.last_frame = None
+        self.PX_PER_MM = 20.0 
 
-    def update_settings(self, roi, thresh, target):
+    def update_settings(self, roi, thresh, target, flip, guide_len):
         self.roi_percent = roi
         self.threshold = thresh
         self.target_angle = target
+        self.flip_tip = flip
+        self.guide_len_mm = guide_len
 
     def start_test(self):
         self.angle_history = []
@@ -89,12 +81,10 @@ class NeedleGuideSimulator(VideoProcessorBase):
             roi_x = int((width - roi_w) / 2)
             roi_y = int((height - roi_h) / 2)
 
-            # マスク処理
             mask = np.zeros_like(img)
             cv2.rectangle(mask, (roi_x, roi_y), (roi_x + roi_w, roi_y + roi_h), (255, 255, 255), -1)
             masked_img = cv2.bitwise_and(img, mask)
 
-            # 画像処理
             gray = cv2.cvtColor(masked_img, cv2.COLOR_BGR2GRAY)
             blurred = cv2.GaussianBlur(gray, (5, 5), 0)
             edges = cv2.Canny(blurred, 50, 150)
@@ -117,147 +107,146 @@ class NeedleGuideSimulator(VideoProcessorBase):
                             best_line = line
                             current_angle = la
 
-            # --- 描画とデータ記録 ---
-            status_color = (0, 255, 255) # 黄色（通常）
+            # --- 描画 ---
+            if best_line is not None:
+                bx1, by1, bx2, by2 = best_line[0]
+                
+                # 針先(Tip)の判定ロジック修正
+                # 通常: Yが大きい方(画面下側)がTip
+                if by1 > by2: # by1の方が下にある
+                    tip = (bx1, by1); tail = (bx2, by2)
+                else: # by2の方が下にある
+                    tip = (bx2, by2); tail = (bx1, by1)
+                
+                # 反転設定があれば逆にする
+                if self.flip_tip:
+                    tip, tail = tail, tip
 
-            if current_angle is not None:
-                # テスト中ならデータを記録
+                # 記録・ステータス
+                status_color = (0, 255, 255)
                 if self.is_recording:
                     self.angle_history.append(current_angle)
-                    status_color = (0, 0, 255) # 赤色（録画中）
-                    cv2.circle(img, (30, 30), 15, (0, 0, 255), -1) # RECマーク
+                    status_color = (0, 0, 255)
+                    cv2.circle(img, (30, 30), 15, (0, 0, 255), -1)
 
-                # ターゲット角度に近いと緑色にする
                 if abs(current_angle - self.target_angle) < 5.0:
-                    status_color = (0, 255, 0)
+                    status_color = (0, 255, 0) # Good!
 
-                # 描画
-                bx1, by1, bx2, by2 = best_line[0]
-                if by1 < by2: tip = (bx1, by1); tail = (bx2, by2)
-                else: tip = (bx2, by2); tail = (bx1, by1)
-                
+                # 針本体
                 cv2.line(img, tail, tip, status_color, 6)
-                msg = f"Angle: {current_angle:.1f}"
-                cv2.putText(img, msg, (tail[0], tail[1]-20), cv2.FONT_HERSHEY_SIMPLEX, 1, status_color, 2)
+                
+                # ガイド線（Tipから延長する）
+                vec_x = tip[0] - tail[0]
+                vec_y = tip[1] - tail[1]
+                vec_len = np.sqrt(vec_x**2 + vec_y**2)
+                
+                if vec_len > 0:
+                    unit_x = vec_x / vec_len
+                    unit_y = vec_y / vec_len
+                    pixel_len = self.guide_len_mm * self.PX_PER_MM
+                    
+                    guide_end_x = int(tip[0] + unit_x * pixel_len)
+                    guide_end_y = int(tip[1] + unit_y * pixel_len)
+                    
+                    # ガイド線 (黄色い点線イメージの実線)
+                    cv2.line(img, tip, (guide_end_x, guide_end_y), (255, 255, 0), 2)
+                    cv2.circle(img, (guide_end_x, guide_end_y), 4, (255, 255, 0), -1)
 
-            # ROI枠表示
+                msg = f"{current_angle:.1f}"
+                cv2.putText(img, msg, (tip[0] + 10, tip[1]), cv2.FONT_HERSHEY_SIMPLEX, 1, status_color, 2)
+
+            # 枠表示
             border_color = (0, 0, 255) if self.is_recording else (0, 255, 0)
             cv2.rectangle(img, (roi_x, roi_y), (roi_x + roi_w, roi_y + roi_h), border_color, 2)
-            
-            # ターゲット角度表示
-            cv2.putText(img, f"Target: {self.target_angle}", (10, height - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
-
-            # 静止画保存用に現在のフレームを保持（BGR->RGB）
             self.last_frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
             return av.VideoFrame.from_ndarray(img, format="bgr24")
-        
-        except Exception as e:
+        except:
             return frame
 
-# --- メイン画面構成 ---
+# --- メイン画面レイアウト ---
+# カメラ映像
+ctx = webrtc_streamer(
+    key="needle-main",
+    mode=WebRtcMode.SENDRECV,
+    rtc_configuration=RTC_CONFIGURATION,
+    video_processor_factory=NeedleGuideSimulator,
+    media_stream_constraints={"video": {"facingMode": "environment"}, "audio": False},
+    async_processing=True,
+)
 
-col1, col2 = st.columns([2, 1])
+# --- ここに操作ボタンを集約（メインエリア） ---
+st.markdown("### 🎮 操作パネル")
 
-with col1:
-    ctx = webrtc_streamer(
-        key="needle-test-mode",
-        mode=WebRtcMode.SENDRECV,
-        rtc_configuration=RTC_CONFIGURATION,
-        video_processor_factory=NeedleGuideSimulator,
-        media_stream_constraints={"video": video_constraints, "audio": False},
-        async_processing=True,
-    )
+# Processorが動いている時だけ表示
+if ctx.video_processor:
+    ctx.video_processor.update_settings(roi_size, threshold, target_angle, flip_tip, guide_len_mm)
 
-# --- 操作パネル（右カラム） ---
-with col2:
-    st.subheader("📸 記録 & テスト")
-    
-    # Processorが起動しているか確認
-    if ctx.video_processor:
-        # 設定をリアルタイム反映
-        ctx.video_processor.update_settings(roi_size, threshold, target_angle)
+    # ボタンを横並びにする
+    btn_col1, btn_col2, btn_col3 = st.columns(3)
 
-        # --- A. 静止画保存機能 ---
-        if st.button("📷 今の画面を保存"):
-            frame = ctx.video_processor.get_last_frame()
-            if frame is not None:
-                # 画像を表示してダウンロードボタンを出す
-                st.image(frame, channels="RGB", use_container_width=True)
-                # 画像をバイト列に変換してダウンロード可能にする
-                is_success, buffer = cv2.imencode(".png", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-                if is_success:
-                    st.download_button(
-                        label="画像をダウンロード",
-                        data=buffer.tobytes(),
-                        file_name="puncture_shot.png",
-                        mime="image/png"
-                    )
-            else:
-                st.warning("映像が見つかりません")
+    # 1. テスト開始/終了ボタン
+    if 'testing' not in st.session_state:
+        st.session_state.testing = False
 
-        st.markdown("---")
-
-        # --- B. テスト機能 ---
-        # セッション状態でテスト中かどうか管理
-        if 'testing' not in st.session_state:
-            st.session_state.testing = False
-
+    with btn_col1:
         if not st.session_state.testing:
-            if st.button("▶️ テスト開始", type="primary"):
+            if st.button("▶️ テスト開始", use_container_width=True, type="primary"):
                 ctx.video_processor.start_test()
                 st.session_state.testing = True
                 st.rerun()
         else:
-            st.warning("🔴 測定中... 角度をキープしてください")
-            if st.button("⏹️ テスト終了"):
+            if st.button("⏹️ 終了・採点", use_container_width=True, type="primary"):
                 history = ctx.video_processor.stop_test()
                 st.session_state.testing = False
-                st.session_state.test_result = history # 結果を保存
+                st.session_state.test_result = history
                 st.rerun()
 
-    else:
-        st.info("カメラを開始してください")
+    # 2. 静止画保存ボタン
+    with btn_col2:
+        if st.button("📷 撮影", use_container_width=True):
+            frame = ctx.video_processor.get_last_frame()
+            if frame is not None:
+                st.session_state.last_capture = frame
+            else:
+                st.toast("映像が見つかりません")
 
-# --- 結果表示エリア（テスト終了後） ---
+    # 3. リセットボタン
+    with btn_col3:
+        if st.button("🔄 リセット", use_container_width=True):
+            if 'test_result' in st.session_state:
+                del st.session_state.test_result
+            if 'last_capture' in st.session_state:
+                del st.session_state.last_capture
+            st.rerun()
+
+else:
+    st.info("上の「START」を押してカメラを起動してください")
+
+# --- 結果・画像表示エリア ---
+st.markdown("---")
+
+# キャプチャ画像の表示
+if 'last_capture' in st.session_state:
+    st.image(st.session_state.last_capture, caption="撮影画像", use_container_width=True)
+    # ダウンロード用
+    is_success, buffer = cv2.imencode(".png", cv2.cvtColor(st.session_state.last_capture, cv2.COLOR_RGB2BGR))
+    if is_success:
+        st.download_button("画像を保存", buffer.tobytes(), "puncture.png", "image/png")
+
+# テスト結果の表示
 if 'test_result' in st.session_state and st.session_state.test_result:
     data = st.session_state.test_result
-    st.markdown("---")
-    st.header("📊 テスト結果")
-
-    if len(data) < 5:
-        st.error("データ不足です。もう少し長く測定してください。")
-    else:
-        # データ分析
+    if len(data) > 5:
         df = pd.DataFrame(data, columns=["Angle"])
+        avg = df["Angle"].mean()
+        std = df["Angle"].std()
+        score = max(0, int(100 - abs(avg - target_angle)*2 - std*5))
         
-        # 指標計算
-        avg_angle = df["Angle"].mean()
-        std_dev = df["Angle"].std() # 標準偏差（ブレの大きさ）
-        
-        # スコア計算（簡易ロジック）
-        # 1. 正確性: 目標とのズレ 1度につき 5点減点
-        accuracy_score = max(0, 50 - abs(avg_angle - target_angle) * 5)
-        
-        # 2. 安定性: ブレ(標準偏差) 1.0につき 10点減点
-        stability_score = max(0, 50 - std_dev * 10)
-        
-        total_score = int(accuracy_score + stability_score)
-
-        # 結果表示
-        res_col1, res_col2, res_col3 = st.columns(3)
-        res_col1.metric("総合スコア", f"{total_score} / 100")
-        res_col2.metric("平均角度", f"{avg_angle:.1f}°", delta=f"{avg_angle - target_angle:.1f}")
-        res_col3.metric("安定性(ブレ)", f"±{std_dev:.2f}°", help="値が小さいほど手が安定しています")
-
-        # グラフ
+        st.success(f"🏆 スコア: {score} 点")
+        cols = st.columns(2)
+        cols[0].metric("平均角度", f"{avg:.1f}°", f"{avg - target_angle:.1f}")
+        cols[1].metric("安定性(±)", f"{std:.2f}")
         st.line_chart(df)
-        
-        # コメント
-        if total_score >= 80:
-            st.balloons()
-            st.success("素晴らしい！プロ級の穿刺技術です。")
-        elif total_score >= 60:
-            st.info("良好です。もう少しブレを抑えられると完璧です。")
-        else:
-            st.warning("ブレが大きいです。脇を締めて固定してみましょう。")
+    else:
+        st.warning("データが短すぎます")
