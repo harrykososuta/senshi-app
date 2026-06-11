@@ -354,7 +354,7 @@ class NeedleGuideProcessor(VideoProcessorBase):
         tail_h = int(self.box_tail_rel[3] * height)
 
         if not self.tracking_active:
-            # セットアップ画面
+            # セットアップ画面 (描画はオリジナル画像に行う)
             cv2.rectangle(img, (tip_x, tip_y),
                           (tip_x + tip_w, tip_y + tip_h), (255, 0, 0), 3)
             cv2.putText(img, "Place TIP here", (tip_x, tip_y - 10),
@@ -368,22 +368,54 @@ class NeedleGuideProcessor(VideoProcessorBase):
             self.angle_history.clear()
             return
 
+        # ------------------------------------------------------------
+        # 高精度・高速化のための前処理 (解像度最適化 & コントラスト強調)
+        # ------------------------------------------------------------
+        # 1. 追従処理用の解像度を幅640基準にダウンスケールしてCPU処理負荷を下げ、FPSを向上
+        target_w = 640
+        scale = target_w / width if width > target_w else 1.0
+
+        # 2. LAB色空間でのコントラスト強調 (CLAHE)
+        # 金属製の針やカラーのプラスチック部分が背景の皮膚からくっきり浮き出るようにする
+        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+        l, a, b_chan = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+        cl = clahe.apply(l)
+        enhanced_lab = cv2.merge((cl, a, b_chan))
+        img_enhanced = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+
+        if scale < 1.0:
+            img_track = cv2.resize(img_enhanced, (int(width * scale), int(height * scale)), interpolation=cv2.INTER_AREA)
+        else:
+            img_track = img_enhanced
+
         # ロックオン開始 (初回のみトラッカー初期化)
         if not self.track_init_done:
             self.tracker_tip = self.create_tracker()
             self.tracker_tail = self.create_tracker()
             if self.tracker_tip and self.tracker_tail:
-                self.tracker_tip.init(img, (tip_x, tip_y, tip_w, tip_h))
-                self.tracker_tail.init(img, (tail_x, tail_y, tail_w, tail_h))
+                # 縮小画像用の位置座標を計算
+                tip_box_small = (int(tip_x * scale), int(tip_y * scale), int(tip_w * scale), int(tip_h * scale))
+                tail_box_small = (int(tail_x * scale), int(tail_y * scale), int(tail_w * scale), int(tail_h * scale))
+                
+                self.tracker_tip.init(img_track, tip_box_small)
+                self.tracker_tail.init(img_track, tail_box_small)
                 self.track_init_done = True
 
         if not self.track_init_done:
             return
 
-        ok_tip, bbox_tip = self.tracker_tip.update(img)
-        ok_tail, bbox_tail = self.tracker_tail.update(img)
+        # 追従実行 (最適化した画像で更新)
+        ok_tip, bbox_tip_small = self.tracker_tip.update(img_track)
+        ok_tail, bbox_tail_small = self.tracker_tail.update(img_track)
 
         if ok_tip and ok_tail:
+            # 座標を元の高解像度にスケールアップ
+            bbox_tip = (int(bbox_tip_small[0] / scale), int(bbox_tip_small[1] / scale),
+                        int(bbox_tip_small[2] / scale), int(bbox_tip_small[3] / scale))
+            bbox_tail = (int(bbox_tail_small[0] / scale), int(bbox_tail_small[1] / scale),
+                         int(bbox_tail_small[2] / scale), int(bbox_tail_small[3] / scale))
+
             p1 = (int(bbox_tip[0] + bbox_tip[2] / 2),
                   int(bbox_tip[1] + bbox_tip[3] / 2))
             p2 = (int(bbox_tail[0] + bbox_tail[2] / 2),
