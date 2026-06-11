@@ -78,6 +78,7 @@ ai_enabled = st.sidebar.checkbox(
 if onnx_session is None:
     st.sidebar.warning("AIモデル (needle_model.onnx) が読み込めませんでした")
 
+box_positions = None
 if mode == "自動検出 (Hough変換)":
     st.sidebar.subheader("自動検出設定")
     target_angle = st.sidebar.slider("目標角度 (°)", 10.0, 90.0, 30.0, step=1.0)
@@ -86,10 +87,22 @@ if mode == "自動検出 (Hough変換)":
 else:
     st.sidebar.subheader("マーカー追従設定")
     st.sidebar.info(
-        "手順:\n1. 青枠に「針先」を合わせる\n2. 赤枠に「針の根本」を合わせる\n3. 「ロックオン」で追従開始"
+        "手順:\n"
+        "1. 下のスライダーで【青枠】を針先に合わせる\n"
+        "2. 【赤枠】を針の根本に合わせる\n"
+        "3. 「ロックオン」で追従開始"
     )
     if "tracking_active" not in st.session_state:
         st.session_state["tracking_active"] = False
+
+    # 青枠(針先)・赤枠(根本)の位置をスライダーで選択
+    st.sidebar.markdown("**🔵 針先(青枠)の位置**")
+    tip_x = st.sidebar.slider("針先 X (%)", 0, 100, 45, key="tip_x")
+    tip_y = st.sidebar.slider("針先 Y (%)", 0, 100, 35, key="tip_y")
+    st.sidebar.markdown("**🔴 根本(赤枠)の位置**")
+    tail_x = st.sidebar.slider("根本 X (%)", 0, 100, 60, key="tail_x")
+    tail_y = st.sidebar.slider("根本 Y (%)", 0, 100, 60, key="tail_y")
+    box_size = st.sidebar.slider("枠のサイズ (%)", 5, 30, 12, key="box_size")
 
     col1, col2 = st.sidebar.columns(2)
     with col1:
@@ -102,6 +115,11 @@ else:
     target_angle = st.sidebar.slider("目標角度 (°)", 10.0, 90.0, 30.0, step=1.0)
     roi_percent = 60
     hsv_threshold = 60
+    # 相対座標(中心基準)に変換して枠を配置
+    box_positions = {
+        "tip": (tip_x / 100, tip_y / 100, box_size / 100),
+        "tail": (tail_x / 100, tail_y / 100, box_size / 100),
+    }
 
 # 採点 (テスト) 機能
 st.sidebar.markdown("---")
@@ -154,12 +172,20 @@ class NeedleGuideProcessor(VideoProcessorBase):
 
     # ---------- UI からの設定反映 ----------
     def update_settings(self, mode, tgt_angle, roi_pct, thresh, ai_on,
-                        tracking_active, recording):
+                        tracking_active, recording, box_positions=None):
         self.mode = mode
         self.target_angle = tgt_angle
         self.roi_percent = roi_pct
         self.threshold = thresh
         self.ai_enabled = ai_on and self.session is not None
+
+        # 枠の位置をスライダーから反映 (中心座標 -> 左上座標に変換)
+        # 追従開始後は枠がトラッカーに従うため、選択中(非追従)のみ更新
+        if box_positions and not self.tracking_active:
+            cx, cy, sz = box_positions["tip"]
+            self.box_tip_rel = (cx - sz / 2, cy - sz / 2, sz, sz)
+            cx, cy, sz = box_positions["tail"]
+            self.box_tail_rel = (cx - sz / 2, cy - sz / 2, sz, sz)
 
         if mode == "Tracking":
             if tracking_active and not self.tracking_active:
@@ -432,6 +458,7 @@ if ctx.video_processor:
         ai_enabled,
         st.session_state.get("tracking_active", False),
         st.session_state["is_recording"],
+        box_positions=box_positions if proc_mode == "Tracking" else None,
     )
 
 if st.session_state["is_recording"]:
