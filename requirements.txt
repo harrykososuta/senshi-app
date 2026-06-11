@@ -1,6 +1,8 @@
 streamlit
 streamlit-webrtc==0.71.1
+streamlit-image-coordinates
 opencv-contrib-python-headless
 numpy
 av
 onnxruntime
+Pillow
