@@ -7,13 +7,20 @@ import cv2
 import numpy as np
 import streamlit as st
 from PIL import Image
-from streamlit_image_coordinates import streamlit_image_coordinates
 from streamlit_webrtc import (
     RTCConfiguration,
     VideoProcessorBase,
     WebRtcMode,
     webrtc_streamer,
 )
+
+# 画像タップ用コンポーネント (未インストールでもアプリ全体は動くようにする)
+try:
+    from streamlit_image_coordinates import streamlit_image_coordinates
+    HAS_IMAGE_COORDS = True
+except ImportError:
+    streamlit_image_coordinates = None
+    HAS_IMAGE_COORDS = False
 
 # ============================================================
 # 穿刺角度ガイドシミュレータ Ver 4.1
@@ -26,7 +33,7 @@ from streamlit_webrtc import (
 
 st.set_page_config(page_title="穿刺角度ガイドシミュレータ", layout="wide")
 st.title("💉 穿刺角度ガイドシミュレータ")
-st.caption("Ver 4.0 — AI針検出 (Teachable Machine) × OpenCV追従 × 角度採点")
+st.caption("Ver 4.2 — 穿刺針 色検出 (16G黄/17G赤) × AI針検出 × 角度採点")
 
 MODEL_PATH = Path(__file__).parent / "needle_model.onnx"
 # Teachable Machine の学習クラス: index 0 = 穿刺(針あり), 1 = no 穿刺針
@@ -69,7 +76,12 @@ video_constraints = {
 st.sidebar.markdown("---")
 st.sidebar.header("🛠 検出モード")
 mode = st.sidebar.radio(
-    "モード選択", ("マーカー追従 (ロックオン方式)", "自動検出 (Hough変換)")
+    "モード選択",
+    (
+        "💉 穿刺針 色検出 (リアルタイム)",
+        "マーカー追従 (タップ)",
+        "自動検出 (Hough変換)",
+    ),
 )
 
 ai_enabled = st.sidebar.checkbox(
@@ -80,12 +92,40 @@ ai_enabled = st.sidebar.checkbox(
 if onnx_session is None:
     st.sidebar.warning("AIモデル (needle_model.onnx) が読み込めませんでした")
 
-if mode == "自動検出 (Hough変換)":
+# 既定値 (各モードで上書き)
+target_angle = 30.0
+roi_percent = 60
+hsv_threshold = 60
+gauge = "16G"
+color_sat_min = 90
+color_val_min = 60
+flip_tip = False
+if "tracking_active" not in st.session_state:
+    st.session_state["tracking_active"] = False
+
+if mode == "💉 穿刺針 色検出 (リアルタイム)":
+    st.sidebar.subheader("穿刺針 色検出設定")
+    st.sidebar.info(
+        "針本体の色を自動で検出して角度を測ります。\n"
+        "貼り物・タップ不要、針が動いてもそのまま計測できます。"
+    )
+    gauge_label = st.sidebar.radio("針のゲージ", ("16G (黄色)", "17G (赤色)"))
+    gauge = "16G" if "16G" in gauge_label else "17G"
+    target_angle = st.sidebar.slider("目標角度 (°)", 10.0, 90.0, 30.0, step=1.0)
+    color_sens = st.sidebar.slider(
+        "色検出の感度", 1, 10, 5,
+        help="高くすると淡い色も拾います。誤検出が多いときは下げてください",
+    )
+    # 感度が高いほど彩度しきい値を下げて淡い色も拾う
+    color_sat_min = int(np.clip(165 - color_sens * 14, 40, 200))
+    flip_tip = st.sidebar.checkbox("針先の向きを反転", value=False,
+                                   help="先端と根本が逆に出るときにチェック")
+elif mode == "自動検出 (Hough変換)":
     st.sidebar.subheader("自動検出設定")
     target_angle = st.sidebar.slider("目標角度 (°)", 10.0, 90.0, 30.0, step=1.0)
     roi_percent = st.sidebar.slider("ROIサイズ (%)", 30, 100, 60)
     hsv_threshold = st.sidebar.slider("HSV彩度閾値", 0, 255, 60)
-else:
+else:  # マーカー追従 (タップ)
     st.sidebar.subheader("マーカー追従設定")
     st.sidebar.info(
         "手順:\n"
@@ -94,12 +134,7 @@ else:
         "   (🪄 自動検出も使えます)\n"
         "3. 「🎯 ロックオン」で追従開始"
     )
-    if "tracking_active" not in st.session_state:
-        st.session_state["tracking_active"] = False
-
     target_angle = st.sidebar.slider("目標角度 (°)", 10.0, 90.0, 30.0, step=1.0)
-    roi_percent = 60
-    hsv_threshold = 60
 
 # 採点 (テスト) 機能
 st.sidebar.markdown("---")
@@ -141,6 +176,12 @@ class NeedleGuideProcessor(VideoProcessorBase):
         self.roi_percent = 60
         self.threshold = 60
 
+        # 穿刺針 色検出パラメータ
+        self.gauge = "16G"
+        self.color_sat_min = 90
+        self.color_val_min = 60
+        self.flip_tip = False
+
         # 追従 (Tracking) パラメータ
         self.tracking_active = False
         self.tracker_tip = None
@@ -155,12 +196,17 @@ class NeedleGuideProcessor(VideoProcessorBase):
 
     # ---------- UI からの設定反映 ----------
     def update_settings(self, mode, tgt_angle, roi_pct, thresh, ai_on,
-                        tracking_active, recording):
+                        tracking_active, recording, gauge="16G",
+                        color_sat_min=90, color_val_min=60, flip_tip=False):
         self.mode = mode
         self.target_angle = tgt_angle
         self.roi_percent = roi_pct
         self.threshold = thresh
         self.ai_enabled = ai_on and self.session is not None
+        self.gauge = gauge
+        self.color_sat_min = color_sat_min
+        self.color_val_min = color_val_min
+        self.flip_tip = flip_tip
 
         if mode == "Tracking":
             if tracking_active and not self.tracking_active:
@@ -244,7 +290,9 @@ class NeedleGuideProcessor(VideoProcessorBase):
             if self.ai_enabled and self.frame_count % 5 == 0:
                 self.classify(img)
 
-            if self.mode == "Tracking":
+            if self.mode == "Color":
+                self._process_color_needle(img, width, height)
+            elif self.mode == "Tracking":
                 self._process_tracking(img, width, height)
             else:
                 self._process_hough(img, width, height)
@@ -261,6 +309,84 @@ class NeedleGuideProcessor(VideoProcessorBase):
         except Exception as e:
             print(f"recv error: {e}")
             return frame
+
+    # ---------- 穿刺針 色検出: 針本体の色マスクを作る ----------
+    def _needle_color_mask(self, hsv):
+        s_min, v_min = self.color_sat_min, self.color_val_min
+        if self.gauge == "16G":
+            # 黄色 (H ~ 18-40)
+            mask = cv2.inRange(hsv, (16, s_min, v_min), (42, 255, 255))
+        else:
+            # 赤色 (H は 0付近と180付近に分かれる)
+            m1 = cv2.inRange(hsv, (0, s_min, v_min), (10, 255, 255))
+            m2 = cv2.inRange(hsv, (168, s_min, v_min), (179, 255, 255))
+            mask = cv2.bitwise_or(m1, m2)
+        kernel = np.ones((5, 5), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        return mask
+
+    # ---------- モード0: 穿刺針 色検出 (リアルタイム) ----------
+    def _process_color_needle(self, img, width, height):
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        mask = self._needle_color_mask(hsv)
+
+        contours, _ = cv2.findContours(
+            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        min_area = 0.0015 * width * height  # フレームの0.15%以上
+
+        big = [c for c in contours if cv2.contourArea(c) >= min_area]
+        if not big:
+            label = "黄(16G)" if self.gauge == "16G" else "赤(17G)"
+            cv2.putText(img, f"Needle ({label}) not found",
+                        (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 80, 255), 2)
+            self.angle_history.clear()
+            return
+
+        c = max(big, key=cv2.contourArea)
+        pts = c.reshape(-1, 2).astype(np.float32)
+
+        # 主軸方向を最小二乗で求める
+        vx, vy, x0, y0 = cv2.fitLine(c, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
+        proj = (pts[:, 0] - x0) * vx + (pts[:, 1] - y0) * vy
+        t_min, t_max = float(proj.min()), float(proj.max())
+        p_a = (int(x0 + vx * t_min), int(y0 + vy * t_min))
+        p_b = (int(x0 + vx * t_max), int(y0 + vy * t_max))
+
+        # 画面下側(皮膚側)の端点を針先とみなす
+        tip, tail = (p_a, p_b) if p_a[1] >= p_b[1] else (p_b, p_a)
+        if self.flip_tip:
+            tip, tail = tail, tip
+
+        dx, dy = tip[0] - tail[0], tip[1] - tail[1]
+        angle = 90.0 if dx == 0 else float(
+            np.degrees(np.arctan2(abs(dy), abs(dx))))
+        smoothed = self.register_angle(angle)
+
+        on_target = abs(smoothed - self.target_angle) < 5.0
+        color = (0, 255, 0) if on_target else (0, 255, 255)
+
+        # 検出した針本体の輪郭を薄く描画
+        cv2.drawContours(img, [c], -1, (200, 200, 200), 1)
+        # 針本体の線
+        cv2.line(img, tail, tip, color, 4)
+
+        # 針先から皮膚方向へガイド線を延長
+        norm = float(np.hypot(dx, dy)) or 1.0
+        ux, uy = dx / norm, dy / norm
+        guide_len = int(0.25 * np.hypot(width, height))
+        g_end = (int(tip[0] + ux * guide_len), int(tip[1] + uy * guide_len))
+        cv2.line(img, tip, g_end, (0, 200, 255), 2)
+
+        # マーカー
+        cv2.circle(img, tip, 12, (0, 0, 255), 3)
+        cv2.circle(img, tail, 12, (255, 0, 0), 3)
+
+        # 角度表示 (縁取りで視認性UP)
+        txt = f"{smoothed:.1f} / {self.target_angle:.0f}deg"
+        org = (tip[0] + 15, tip[1])
+        cv2.putText(img, txt, org, cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 4)
+        cv2.putText(img, txt, org, cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
 
     # ---------- モードA: ロックオン追従 ----------
     def _process_tracking(self, img, width, height):
@@ -443,7 +569,15 @@ def _clear_selection():
         st.session_state.pop(k, None)
 
 
-if mode == "マーカー追従 (ロックオン方式)":
+if mode == "マーカー追従 (タップ)" and not HAS_IMAGE_COORDS:
+    st.markdown("#### 🎯 針の位置選択")
+    st.warning(
+        "位置選択コンポーネント (streamlit-image-coordinates) がまだ読み込まれていません。\n\n"
+        "Streamlit Cloud の右下「Manage app」→「⋮」→「Reboot app」でアプリを再起動すると、"
+        "依存関係が再インストールされ、タップ選択が使えるようになります。"
+    )
+
+if mode == "マーカー追従 (タップ)" and HAS_IMAGE_COORDS:
     st.markdown("#### 🎯 針の位置選択")
 
     if st.session_state["tracking_active"]:
@@ -566,7 +700,12 @@ if stop_test and st.session_state["is_recording"]:
 
 # パラメータ動的反映
 if ctx.video_processor:
-    proc_mode = "Tracking" if mode == "マーカー追従 (ロックオン方式)" else "Auto"
+    if mode == "💉 穿刺針 色検出 (リアルタイム)":
+        proc_mode = "Color"
+    elif mode == "マーカー追従 (タップ)":
+        proc_mode = "Tracking"
+    else:
+        proc_mode = "Auto"
     ctx.video_processor.update_settings(
         proc_mode,
         target_angle,
@@ -575,6 +714,10 @@ if ctx.video_processor:
         ai_enabled,
         st.session_state.get("tracking_active", False),
         st.session_state["is_recording"],
+        gauge=gauge,
+        color_sat_min=color_sat_min,
+        color_val_min=color_val_min,
+        flip_tip=flip_tip,
     )
 
 if st.session_state["is_recording"]:
