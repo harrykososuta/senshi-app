@@ -87,39 +87,19 @@ if mode == "自動検出 (Hough変換)":
 else:
     st.sidebar.subheader("マーカー追従設定")
     st.sidebar.info(
-        "手順:\n"
-        "1. 下のスライダーで【青枠】を針先に合わせる\n"
-        "2. 【赤枠】を針の根本に合わせる\n"
-        "3. 「ロックオン」で追従開始"
+        "映像の下の十字キーで青枠(針先)・赤枠(根本)を\n"
+        "針に合わせて「ロックオン」を押してください。"
     )
     if "tracking_active" not in st.session_state:
         st.session_state["tracking_active"] = False
-
-    # 青枠(針先)・赤枠(根本)の位置をスライダーで選択
-    st.sidebar.markdown("**🔵 針先(青枠)の位置**")
-    tip_x = st.sidebar.slider("針先 X (%)", 0, 100, 45, key="tip_x")
-    tip_y = st.sidebar.slider("針先 Y (%)", 0, 100, 35, key="tip_y")
-    st.sidebar.markdown("**🔴 根本(赤枠)の位置**")
-    tail_x = st.sidebar.slider("根本 X (%)", 0, 100, 60, key="tail_x")
-    tail_y = st.sidebar.slider("根本 Y (%)", 0, 100, 60, key="tail_y")
-    box_size = st.sidebar.slider("枠のサイズ (%)", 5, 30, 12, key="box_size")
-
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        if st.button("🎯 ロックオン"):
-            st.session_state["tracking_active"] = True
-    with col2:
-        if st.button("🔄 リセット"):
-            st.session_state["tracking_active"] = False
+    # 枠位置の初期値 (%) — 十字キーで調整
+    for _k, _v in (("trk_tip_x", 45), ("trk_tip_y", 30),
+                   ("trk_tail_x", 60), ("trk_tail_y", 60), ("trk_box", 12)):
+        st.session_state.setdefault(_k, _v)
 
     target_angle = st.sidebar.slider("目標角度 (°)", 10.0, 90.0, 30.0, step=1.0)
     roi_percent = 60
     hsv_threshold = 60
-    # 相対座標(中心基準)に変換して枠を配置
-    box_positions = {
-        "tip": (tip_x / 100, tip_y / 100, box_size / 100),
-        "tail": (tail_x / 100, tail_y / 100, box_size / 100),
-    }
 
 # 採点 (テスト) 機能
 st.sidebar.markdown("---")
@@ -433,6 +413,78 @@ ctx = webrtc_streamer(
     media_stream_constraints={"video": video_constraints, "audio": False},
     async_processing=True,
 )
+
+# ------------------------------------------------------------
+# マーカー追従: 十字キーで枠位置を調整 (メイン画面)
+# ------------------------------------------------------------
+if mode == "マーカー追従 (ロックオン方式)":
+    st.markdown("#### 🎯 枠の位置あわせ")
+
+    if st.session_state.get("tracking_active"):
+        st.success("🔒 追従中です。位置を選び直すには「リセット」を押してください。")
+        if st.button("🔄 リセット (選び直す)", use_container_width=True):
+            st.session_state["tracking_active"] = False
+            st.rerun()
+    else:
+        target_box = st.radio(
+            "動かす枠を選ぶ", ["🔵 針先 (青)", "🔴 根本 (赤)"],
+            horizontal=True, key="trk_target",
+        )
+        prefix = "trk_tip" if "針先" in target_box else "trk_tail"
+        STEP = 4
+
+        def _nudge(axis, delta):
+            key = f"{prefix}_{axis}"
+            st.session_state[key] = int(
+                np.clip(st.session_state[key] + delta, 0, 100))
+
+        # --- 十字キー ---
+        up = st.columns([1, 1, 1])
+        if up[1].button("⬆️", use_container_width=True, key="pad_up"):
+            _nudge("y", -STEP); st.rerun()
+        mid = st.columns([1, 1, 1])
+        if mid[0].button("⬅️", use_container_width=True, key="pad_left"):
+            _nudge("x", -STEP); st.rerun()
+        mid[1].markdown(
+            "<div style='text-align:center;font-size:22px'>✛</div>",
+            unsafe_allow_html=True)
+        if mid[2].button("➡️", use_container_width=True, key="pad_right"):
+            _nudge("x", STEP); st.rerun()
+        dn = st.columns([1, 1, 1])
+        if dn[1].button("⬇️", use_container_width=True, key="pad_down"):
+            _nudge("y", STEP); st.rerun()
+
+        # --- 枠サイズ ---
+        sz = st.columns(2)
+        if sz[0].button("➖ 枠を小さく", use_container_width=True):
+            st.session_state["trk_box"] = int(
+                np.clip(st.session_state["trk_box"] - 2, 5, 30)); st.rerun()
+        if sz[1].button("➕ 枠を大きく", use_container_width=True):
+            st.session_state["trk_box"] = int(
+                np.clip(st.session_state["trk_box"] + 2, 5, 30)); st.rerun()
+
+        st.caption(
+            f"🔵 針先 ({st.session_state['trk_tip_x']}, "
+            f"{st.session_state['trk_tip_y']})  ／  "
+            f"🔴 根本 ({st.session_state['trk_tail_x']}, "
+            f"{st.session_state['trk_tail_y']})  ／  "
+            f"枠サイズ {st.session_state['trk_box']}%"
+        )
+
+        if st.button("🎯 ロックオン (追従開始)", type="primary",
+                     use_container_width=True):
+            st.session_state["tracking_active"] = True
+            st.rerun()
+
+    # 現在の枠位置を box_positions にまとめる (中心座標)
+    box_positions = {
+        "tip": (st.session_state["trk_tip_x"] / 100,
+                st.session_state["trk_tip_y"] / 100,
+                st.session_state["trk_box"] / 100),
+        "tail": (st.session_state["trk_tail_x"] / 100,
+                 st.session_state["trk_tail_y"] / 100,
+                 st.session_state["trk_box"] / 100),
+    }
 
 # ------------------------------------------------------------
 # テスト (採点) 制御と結果表示
