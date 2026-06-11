@@ -376,11 +376,17 @@ class NeedleGuideProcessor(VideoProcessorBase):
 
 
 # ------------------------------------------------------------
-# WebRTC 接続設定 (STUN + 無料TURN)
-#   Streamlit Cloud などサーバー経由ではNAT越えできない端末向けに
-#   TURN を併記。st.secrets に turn 設定があればそれを優先。
+# WebRTC 接続設定
+#   ローカルや同一ネットワークでは STUN だけで直接接続できる。
+#   Streamlit Cloud などで NAT 越えが必要な端末向けに、TURN は
+#   st.secrets に設定があるときだけ追加する (動作する TURN を各自用意)。
+#   ※ かつての無料 Open Relay TURN は廃止されており、設定すると
+#     応答待ちで接続がタイムアウトするため使用しない。
 # ------------------------------------------------------------
-ice_servers = [{"urls": ["stun:stun.l.google.com:19302"]}]
+ice_servers = [
+    {"urls": ["stun:stun.l.google.com:19302"]},
+    {"urls": ["stun:stun1.l.google.com:19302"]},
+]
 try:
     turn = st.secrets["turn"]
     ice_servers.append({
@@ -389,15 +395,7 @@ try:
         "credential": turn["credential"],
     })
 except Exception:
-    # 無料の Open Relay TURN (帯域制限あり)
-    ice_servers.append({
-        "urls": [
-            "turn:openrelay.metered.ca:80",
-            "turn:openrelay.metered.ca:443",
-        ],
-        "username": "openrelayproject",
-        "credential": "openrelayproject",
-    })
+    pass
 
 RTC_CONFIGURATION = RTCConfiguration({"iceServers": ice_servers})
 
