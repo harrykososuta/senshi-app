@@ -1,0 +1,23 @@
+# ローカル専用ツール
+ngrok.exe
+
+# Vercel版 (参照用・デプロイ対象外)
+nextjs-app/
+
+# モデル変換用の仮想環境・中間生成物
+model_conversion/venv/
+model_conversion/needle_model.h5
+model_conversion/needle_model.onnx
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Claude Code
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
