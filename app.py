@@ -26,6 +26,20 @@ st.set_page_config(page_title="穿刺角度ガイドシミュレータ", layout=
 st.title("💉 穿刺角度ガイドシミュレータ")
 st.caption("Ver 4.0 — AI針検出 (Teachable Machine) × OpenCV追従 × 角度採点")
 
+# セッション状態の初期化（KeyError防止のため、アプリ起動時に一括で初期化）
+INITIAL_SESSION_STATES = {
+    "is_recording": False,
+    "tracking_active": False,
+    "trk_tip_x": 50,
+    "trk_tip_y": 40,
+    "trk_tail_x": 50,
+    "trk_tail_y": 60,
+    "trk_box": 12,
+}
+for key, val in INITIAL_SESSION_STATES.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
+
 # スマホ画面でスクロールせずにカメラ映像と操作系を1画面に収めるためのCSS
 st.markdown(
     """
@@ -93,10 +107,12 @@ st.markdown(
             margin-bottom: 0px !important;
             gap: 4px !important;
         }
-        /* カメラ映像（webrtc_streamer の iframe）の高さを400pxに固定 */
+        /* カメラ映像（webrtc_streamer の iframe）の高さをアスペクト比を維持しつつ調整 */
         .block-container iframe {
+            width: 100% !important;
+            height: auto !important;
+            min-height: 350px !important;
             max-height: 400px !important;
-            height: 400px !important;
         }
     }
     </style>
@@ -138,8 +154,8 @@ camera_mode = st.sidebar.radio(
 facing = "user" if camera_mode == "インカメラ (自分側)" else "environment"
 video_constraints = {
     "facingMode": facing,
-    "width": {"ideal": 1280},
-    "height": {"ideal": 720},
+    "width": {"ideal": 640},
+    "height": {"ideal": 480},
 }
 
 st.sidebar.markdown("---")
