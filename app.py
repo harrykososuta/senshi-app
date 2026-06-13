@@ -88,10 +88,10 @@ st.markdown(
         div[data-testid="stElementContainer"] {
             margin-bottom: 0.15rem !important;
         }
-        /* カメラ映像（webrtc_streamer の iframe）の高さを適度なサイズに制限（360pxに調整） */
+        /* カメラ映像（webrtc_streamer の iframe）の高さを適度なサイズに制限（400pxに調整） */
         .block-container iframe {
-            max-height: 360px !important;
-            height: 360px !important;
+            max-height: 400px !important;
+            height: 400px !important;
         }
     }
     </style>
