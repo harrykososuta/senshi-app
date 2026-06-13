@@ -26,19 +26,68 @@ st.set_page_config(page_title="穿刺角度ガイドシミュレータ", layout=
 st.title("💉 穿刺角度ガイドシミュレータ")
 st.caption("Ver 4.0 — AI針検出 (Teachable Machine) × OpenCV追従 × 角度採点")
 
-# サイドバー内のカラムレイアウト（十字キーなど）がスマホで縦積みにならないようにするCSS
+# スマホ画面でスクロールせずにカメラ映像と操作系を1画面に収めるためのCSS
 st.markdown(
     """
     <style>
-    div[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] {
+    /* メイン画面内のすべての st.columns をスマホでも横並びに固定（外側の構造用ブロックに影響しないように制限） */
+    .block-container [data-testid="stHorizontalBlock"] {
         flex-direction: row !important;
         flex-wrap: nowrap !important;
-        gap: 4px !important;
+        gap: 6px !important;
     }
-    div[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
+    /* Streamlitがモバイル用（width: 100% !important）に強制するカラムラッパーの幅指定を上書き */
+    .block-container [data-testid="stHorizontalBlock"] > div {
+        min-width: 0 !important;
+        width: auto !important;
+        flex: 1 1 0% !important;
+    }
+    .block-container [data-testid="column"] {
         flex: 1 1 0% !important;
         min-width: 0 !important;
         width: auto !important;
+    }
+    .block-container [data-testid="stHorizontalBlock"] button {
+        padding-left: 2px !important;
+        padding-right: 2px !important;
+        min-height: 2.2rem !important;
+        height: 2.2rem !important;
+        font-size: 16px !important;
+    }
+
+    /* モバイル（画面幅640px以下）の場合のレイアウト圧縮 */
+    @media (max-width: 640px) {
+        /* メインコンテナの余白を極限まで削る */
+        .block-container {
+            padding-top: 0.5rem !important;
+            padding-bottom: 0.5rem !important;
+            padding-left: 0.4rem !important;
+            padding-right: 0.4rem !important;
+        }
+        /* ヘッダーバーの非表示 */
+        header[data-testid="stHeader"] {
+            display: none !important;
+        }
+        /* タイトル・キャプションのサイズ縮小と余白カット */
+        h1 {
+            font-size: 1.25rem !important;
+            margin-top: 0px !important;
+            margin-bottom: 0px !important;
+            padding-top: 0px !important;
+        }
+        h2, h3 {
+            font-size: 1.05rem !important;
+            margin-top: 0.3rem !important;
+            margin-bottom: 0.1rem !important;
+        }
+        .stCaption {
+            font-size: 0.75rem !important;
+            margin-bottom: 0.2rem !important;
+        }
+        /* ウィジェット間の不要な余白をカット */
+        div[data-testid="stElementContainer"] {
+            margin-bottom: 0.15rem !important;
+        }
     }
     </style>
     """,
@@ -97,100 +146,9 @@ ai_enabled = st.sidebar.checkbox(
 if onnx_session is None:
     st.sidebar.warning("AIモデル (needle_model.onnx) が読み込めませんでした")
 
-box_positions = None
-if mode == "自動検出 (Hough変換)":
-    st.sidebar.subheader("自動検出設定")
-    target_angle = st.sidebar.slider("目標角度 (°)", 10.0, 90.0, 30.0, step=1.0)
-    roi_percent = st.sidebar.slider("ROIサイズ (%)", 30, 100, 60)
-    hsv_threshold = st.sidebar.slider("HSV彩度閾値", 0, 255, 60)
-else:
-    st.sidebar.subheader("🎯 枠の位置あわせ")
-    if "tracking_active" not in st.session_state:
-        st.session_state["tracking_active"] = False
-        
-    # 枠位置の初期値 (%) — 十字キーで調整
-    for _k, _v in (("trk_tip_x", 45), ("trk_tip_y", 30),
-                   ("trk_tail_x", 60), ("trk_tail_y", 60), ("trk_box", 12)):
-        st.session_state.setdefault(_k, _v)
+target_angle = st.sidebar.slider("目標角度 (°)", 10.0, 90.0, 30.0, step=1.0)
 
-    if st.session_state.get("tracking_active"):
-        st.sidebar.success("🔒 追従中です。")
-        if st.sidebar.button("🔄 リセット (選び直す)", use_container_width=True):
-            st.session_state["tracking_active"] = False
-            st.rerun()
-    else:
-        target_box = st.sidebar.radio(
-            "動かす枠を選ぶ", ["🔵 針先 (青)", "🔴 根本 (赤)"],
-            horizontal=True, key="trk_target",
-        )
-        prefix = "trk_tip" if "針先" in target_box else "trk_tail"
-        STEP = 4
-
-        def _nudge(axis, delta):
-            key = f"{prefix}_{axis}"
-            st.session_state[key] = int(
-                np.clip(st.session_state[key] + delta, 0, 100))
-
-        # --- 十字キー ---
-        up = st.sidebar.columns([1, 1, 1])
-        if up[1].button("⬆️", use_container_width=True, key="pad_up"):
-            _nudge("y", -STEP); st.rerun()
-        mid = st.sidebar.columns([1, 1, 1])
-        if mid[0].button("⬅️", use_container_width=True, key="pad_left"):
-            _nudge("x", -STEP); st.rerun()
-        mid[1].markdown(
-            "<div style='text-align:center;font-size:22px'>✛</div>",
-            unsafe_allow_html=True)
-        if mid[2].button("➡️", use_container_width=True, key="pad_right"):
-            _nudge("x", STEP); st.rerun()
-        dn = st.sidebar.columns([1, 1, 1])
-        if dn[1].button("⬇️", use_container_width=True, key="pad_down"):
-            _nudge("y", STEP); st.rerun()
-
-        # --- 枠サイズ ---
-        sz = st.sidebar.columns(2)
-        if sz[0].button("➖ 枠を小さく", use_container_width=True):
-            st.session_state["trk_box"] = int(
-                np.clip(st.session_state["trk_box"] - 2, 5, 30)); st.rerun()
-        if sz[1].button("➕ 枠を大きく", use_container_width=True):
-            st.session_state["trk_box"] = int(
-                np.clip(st.session_state["trk_box"] + 2, 5, 30)); st.rerun()
-
-        st.sidebar.caption(
-            f"🔵 針先 ({st.session_state['trk_tip_x']}, {st.session_state['trk_tip_y']})  \n"
-            f"🔴 根本 ({st.session_state['trk_tail_x']}, {st.session_state['trk_tail_y']})  \n"
-            f"枠サイズ {st.session_state['trk_box']}%"
-        )
-
-        if st.sidebar.button("🎯 ロックオン (追従開始)", type="primary", use_container_width=True):
-            st.session_state["tracking_active"] = True
-            st.rerun()
-
-    # 現在の枠位置を box_positions にまとめる (中心座標)
-    box_positions = {
-        "tip": (st.session_state["trk_tip_x"] / 100,
-                st.session_state["trk_tip_y"] / 100,
-                st.session_state["trk_box"] / 100),
-        "tail": (st.session_state["trk_tail_x"] / 100,
-                 st.session_state["trk_tail_y"] / 100,
-                 st.session_state["trk_box"] / 100),
-    }
-
-    target_angle = st.sidebar.slider("目標角度 (°)", 10.0, 90.0, 30.0, step=1.0)
-    roi_percent = 60
-    hsv_threshold = 60
-
-# 採点 (テスト) 機能
-st.sidebar.markdown("---")
-st.sidebar.header("📊 角度テスト (採点)")
-if "is_recording" not in st.session_state:
-    st.session_state["is_recording"] = False
-
-rec_col1, rec_col2 = st.sidebar.columns(2)
-with rec_col1:
-    start_test = st.button("▶️ テスト開始")
-with rec_col2:
-    stop_test = st.button("⏹ 終了・採点")
+# (その他の設定やコントロール類は、スマホ対応のためメイン画面の映像下に配置しました)
 
 
 # ------------------------------------------------------------
@@ -500,10 +458,17 @@ class NeedleGuideProcessor(VideoProcessorBase):
 #   ※ かつての無料 Open Relay TURN は廃止されており、設定すると
 #     応答待ちで接続がタイムアウトするため使用しない。
 # ------------------------------------------------------------
-ice_servers = [
-    {"urls": ["stun:stun.l.google.com:19302"]},
-    {"urls": ["stun:stun1.l.google.com:19302"]},
-]
+# ローカル起動時は外部STUNサーバーへの接続試行がネットワーク環境（ファイアウォールやVPN等）でブロックされ、
+# 接続タイムアウト（Connection taking longer...）の原因となるため、デフォルトでは空（ローカル通信のみ）に設定します。
+ice_servers = []
+
+# もし外部サーバー（Streamlit Cloud等）にデプロイし、カメラが接続できなくなった場合は、
+# 以下のコメントアウトを解除してSTUNサーバーを有効にしてください。
+# ice_servers = [
+#     {"urls": ["stun:stun.l.google.com:19302"]},
+#     {"urls": ["stun:stun1.l.google.com:19302"]},
+# ]
+
 try:
     turn = st.secrets["turn"]
     ice_servers.append({
@@ -525,8 +490,109 @@ ctx = webrtc_streamer(
     async_processing=True,
 )
 
-# 枠の位置調整コントロールはサイドバーへ移動しました
-pass
+# ------------------------------------------------------------
+# 🎯 操作コントロールパネル（カメラ映像の下に配置し、見ながら操作できるように改善）
+# ------------------------------------------------------------
+st.markdown("---")
+
+box_positions = None
+if mode == "自動検出 (Hough変換)":
+    st.subheader("📐 自動検出設定")
+    c1, c2 = st.columns(2)
+    with c1:
+        roi_percent = st.slider("ROIサイズ (%)", 30, 100, 60)
+    with c2:
+        hsv_threshold = st.slider("HSV彩度閾値", 0, 255, 60)
+else:
+    if "tracking_active" not in st.session_state:
+        st.session_state["tracking_active"] = False
+        
+    # 枠位置の初期値 (%) — 十字キーで調整
+    for _k, _v in (("trk_tip_x", 45), ("trk_tip_y", 30),
+                   ("trk_tail_x", 60), ("trk_tail_y", 60), ("trk_box", 12)):
+        st.session_state.setdefault(_k, _v)
+
+    if st.session_state.get("tracking_active"):
+        st.success("🔒 追従中")
+        if st.button("🔄 リセット (枠を合わせ直す)", use_container_width=True, type="primary"):
+            st.session_state["tracking_active"] = False
+            st.rerun()
+    else:
+        # 動かす対象の切り替え（テキスト「動かす枠:」と見出しは不要なので削除）
+        target_box = st.radio(
+            "動かす枠:", ["🔵 針先 (青)", "🔴 根本 (赤)"],
+            horizontal=True, key="trk_target",
+            label_visibility="collapsed"
+        )
+            
+        prefix = "trk_tip" if "針先" in target_box else "trk_tail"
+        STEP = 4
+
+        def _nudge(axis, delta):
+            key = f"{prefix}_{axis}"
+            st.session_state[key] = int(
+                np.clip(st.session_state[key] + delta, 0, 100))
+
+        # 2列のゲームパッド風ボタン配列（スマホ操作用）
+        # 1行目: 左・上・右 の移動
+        pad_row1 = st.columns(3)
+        with pad_row1[0]:
+            if st.button("⬅️", use_container_width=True, key="pad_left"):
+                _nudge("x", -STEP); st.rerun()
+        with pad_row1[1]:
+            if st.button("⬆️", use_container_width=True, key="pad_up"):
+                _nudge("y", -STEP); st.rerun()
+        with pad_row1[2]:
+            if st.button("➡️", use_container_width=True, key="pad_right"):
+                _nudge("x", STEP); st.rerun()
+
+        # 2行目: 枠縮小・下・枠拡大
+        pad_row2 = st.columns(3)
+        with pad_row2[0]:
+            if st.button("➖", use_container_width=True, key="pad_shrink", help="枠を小さく"):
+                st.session_state["trk_box"] = int(np.clip(st.session_state["trk_box"] - 2, 5, 30))
+                st.rerun()
+        with pad_row2[1]:
+            if st.button("⬇️", use_container_width=True, key="pad_down"):
+                _nudge("y", STEP); st.rerun()
+        with pad_row2[2]:
+            if st.button("➕", use_container_width=True, key="pad_grow", help="枠を大きく"):
+                st.session_state["trk_box"] = int(np.clip(st.session_state["trk_box"] + 2, 5, 30))
+                st.rerun()
+
+        st.caption(
+            f"🔵 ({st.session_state['trk_tip_x']},{st.session_state['trk_tip_y']}) | "
+            f"🔴 ({st.session_state['trk_tail_x']},{st.session_state['trk_tail_y']}) | "
+            f"枠幅 {st.session_state['trk_box']}%"
+        )
+
+        if st.button("🎯 ロックオン (追従開始)", type="primary", use_container_width=True):
+            st.session_state["tracking_active"] = True
+            st.rerun()
+
+    # 現在の枠位置を box_positions にまとめる (中心座標)
+    box_positions = {
+        "tip": (st.session_state["trk_tip_x"] / 100,
+                st.session_state["trk_tip_y"] / 100,
+                st.session_state["trk_box"] / 100),
+        "tail": (st.session_state["trk_tail_x"] / 100,
+                 st.session_state["trk_tail_y"] / 100,
+                 st.session_state["trk_box"] / 100),
+    }
+
+    roi_percent = 60
+    hsv_threshold = 60
+
+# テスト（採点）の開始・終了コントロール
+if "is_recording" not in st.session_state:
+    st.session_state["is_recording"] = False
+
+rec_col1, rec_col2 = st.columns(2)
+with rec_col1:
+    btn_type = "secondary" if st.session_state["is_recording"] else "primary"
+    start_test = st.button("▶️ テスト開始", use_container_width=True, type=btn_type)
+with rec_col2:
+    stop_test = st.button("⏹ 終了・採点", use_container_width=True, disabled=not st.session_state["is_recording"])
 
 # ------------------------------------------------------------
 # テスト (採点) 制御と結果表示
@@ -534,12 +600,14 @@ pass
 if start_test:
     st.session_state["is_recording"] = True
     st.session_state.pop("test_result", None)
+    st.rerun()
 if stop_test and st.session_state["is_recording"]:
     st.session_state["is_recording"] = False
     if ctx.video_processor:
         with ctx.video_processor.lock:
             angles = list(ctx.video_processor.recorded_angles)
         st.session_state["test_result"] = angles
+    st.rerun()
 
 # パラメータ動的反映
 if ctx.video_processor:
