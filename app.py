@@ -458,16 +458,19 @@ class NeedleGuideProcessor(VideoProcessorBase):
 #   ※ かつての無料 Open Relay TURN は廃止されており、設定すると
 #     応答待ちで接続がタイムアウトするため使用しない。
 # ------------------------------------------------------------
-# ローカル起動時は外部STUNサーバーへの接続試行がネットワーク環境（ファイアウォールやVPN等）でブロックされ、
-# 接続タイムアウト（Connection taking longer...）の原因となるため、デフォルトでは空（ローカル通信のみ）に設定します。
-ice_servers = []
+# 実行環境がローカル（開発PC）か、クラウド（Streamlit Community Cloud等のLinuxコンテナ）かを自動判定。
+# ローカル環境では外部STUNへの接続試行によるタイムアウトを防ぐためSTUNを無効化し、
+# クラウド環境ではNAT越えのためにGoogleの公開STUNサーバーを有効化します。
+import os
+is_local = (os.name == 'nt') or not os.path.exists("/home/appuser")
 
-# もし外部サーバー（Streamlit Cloud等）にデプロイし、カメラが接続できなくなった場合は、
-# 以下のコメントアウトを解除してSTUNサーバーを有効にしてください。
-# ice_servers = [
-#     {"urls": ["stun:stun.l.google.com:19302"]},
-#     {"urls": ["stun:stun1.l.google.com:19302"]},
-# ]
+if is_local:
+    ice_servers = []
+else:
+    ice_servers = [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        {"urls": ["stun:stun1.l.google.com:19302"]},
+    ]
 
 try:
     turn = st.secrets["turn"]
