@@ -59,10 +59,10 @@ st.markdown(
     @media (max-width: 640px) {
         /* メインコンテナの余白を極限まで削る */
         .block-container {
-            padding-top: 0.5rem !important;
-            padding-bottom: 0.5rem !important;
-            padding-left: 0.4rem !important;
-            padding-right: 0.4rem !important;
+            padding-top: 0.15rem !important;
+            padding-bottom: 0.15rem !important;
+            padding-left: 0.3rem !important;
+            padding-right: 0.3rem !important;
         }
         /* ヘッダーバーの非表示 */
         header[data-testid="stHeader"] {
@@ -70,25 +70,30 @@ st.markdown(
         }
         /* タイトル・キャプションのサイズ縮小と余白カット */
         h1 {
-            font-size: 1.25rem !important;
+            font-size: 1.1rem !important;
             margin-top: 0px !important;
             margin-bottom: 0px !important;
             padding-top: 0px !important;
         }
         h2, h3 {
-            font-size: 1.05rem !important;
-            margin-top: 0.3rem !important;
-            margin-bottom: 0.1rem !important;
+            font-size: 0.9rem !important;
+            margin-top: 0.1rem !important;
+            margin-bottom: 0.05rem !important;
         }
         .stCaption {
-            font-size: 0.75rem !important;
-            margin-bottom: 0.2rem !important;
+            font-size: 0.65rem !important;
+            margin-bottom: 0.1rem !important;
         }
         /* ウィジェット間の不要な余白をカット */
         div[data-testid="stElementContainer"] {
-            margin-bottom: 0.15rem !important;
+            margin-bottom: 0.05rem !important;
         }
-        /* カメラ映像（webrtc_streamer の iframe）の高さを適度なサイズに制限（400pxに調整） */
+        /* 横並びブロックのマージンや隙間を最小限に */
+        .block-container [data-testid="stHorizontalBlock"] {
+            margin-bottom: 0px !important;
+            gap: 4px !important;
+        }
+        /* カメラ映像（webrtc_streamer の iframe）の高さを400pxに固定 */
         .block-container iframe {
             max-height: 400px !important;
             height: 400px !important;
@@ -320,11 +325,11 @@ class NeedleGuideProcessor(VideoProcessorBase):
             # セットアップ画面 (描画はオリジナル画像に行う)
             cv2.rectangle(img, (tip_x, tip_y),
                           (tip_x + tip_w, tip_y + tip_h), (255, 0, 0), 3)
-            cv2.putText(img, "Place TIP here", (tip_x, tip_y - 10),
+            cv2.putText(img, "Place BODY here", (tip_x, tip_y - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
             cv2.rectangle(img, (tail_x, tail_y),
                           (tail_x + tail_w, tail_y + tail_h), (0, 0, 255), 3)
-            cv2.putText(img, "Place BODY here", (tail_x, tail_y - 10),
+            cv2.putText(img, "Place TIP here", (tail_x, tail_y - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             cv2.putText(img, "Align Needle & Press 'Lock-on'", (50, 50),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
@@ -501,7 +506,7 @@ ctx = webrtc_streamer(
 # ------------------------------------------------------------
 # 🎯 操作コントロールパネル（カメラ映像の下に配置し、見ながら操作できるように改善）
 # ------------------------------------------------------------
-st.markdown("---")
+st.write("")
 
 box_positions = None
 if mode == "自動検出 (Hough変換)":
@@ -516,8 +521,8 @@ else:
         st.session_state["tracking_active"] = False
         
     # 枠位置の初期値 (%) — 十字キーで調整
-    for _k, _v in (("trk_tip_x", 45), ("trk_tip_y", 30),
-                   ("trk_tail_x", 60), ("trk_tail_y", 60), ("trk_box", 12)):
+    for _k, _v in (("trk_tip_x", 50), ("trk_tip_y", 40),
+                   ("trk_tail_x", 50), ("trk_tail_y", 60), ("trk_box", 12)):
         st.session_state.setdefault(_k, _v)
 
     if st.session_state.get("tracking_active"):
@@ -528,12 +533,12 @@ else:
     else:
         # 動かす対象の切り替え（テキスト「動かす枠:」と見出しは不要なので削除）
         target_box = st.radio(
-            "動かす枠:", ["🔵 針先 (青)", "🔴 根本 (赤)"],
+            "動かす枠:", ["🔵 根本 (青)", "🔴 針先 (赤)"],
             horizontal=True, key="trk_target",
             label_visibility="collapsed"
         )
             
-        prefix = "trk_tip" if "針先" in target_box else "trk_tail"
+        prefix = "trk_tip" if "根本" in target_box else "trk_tail"
         STEP = 4
 
         def _nudge(axis, delta):
@@ -569,8 +574,8 @@ else:
                 st.rerun()
 
         st.caption(
-            f"🔵 ({st.session_state['trk_tip_x']},{st.session_state['trk_tip_y']}) | "
-            f"🔴 ({st.session_state['trk_tail_x']},{st.session_state['trk_tail_y']}) | "
+            f"🔵 根本 ({st.session_state['trk_tip_x']},{st.session_state['trk_tip_y']}) | "
+            f"🔴 針先 ({st.session_state['trk_tail_x']},{st.session_state['trk_tail_y']}) | "
             f"枠幅 {st.session_state['trk_box']}%"
         )
 
@@ -591,16 +596,26 @@ else:
     roi_percent = 60
     hsv_threshold = 60
 
-# テスト（採点）の開始・終了コントロール
-if "is_recording" not in st.session_state:
-    st.session_state["is_recording"] = False
+# テスト（採点）の開始・終了コントロール (追従モードの時はロックオン時のみ表示)
+show_test_controls = False
+if mode == "自動検出 (Hough変換)":
+    show_test_controls = True
+elif mode == "マーカー追従 (ロックオン方式)" and st.session_state.get("tracking_active"):
+    show_test_controls = True
 
-rec_col1, rec_col2 = st.columns(2)
-with rec_col1:
-    btn_type = "secondary" if st.session_state["is_recording"] else "primary"
-    start_test = st.button("▶️ テスト開始", use_container_width=True, type=btn_type)
-with rec_col2:
-    stop_test = st.button("⏹ 終了・採点", use_container_width=True, disabled=not st.session_state["is_recording"])
+if show_test_controls:
+    if "is_recording" not in st.session_state:
+        st.session_state["is_recording"] = False
+    
+    rec_col1, rec_col2 = st.columns(2)
+    with rec_col1:
+        btn_type = "secondary" if st.session_state["is_recording"] else "primary"
+        start_test = st.button("▶️ テスト開始", use_container_width=True, type=btn_type)
+    with rec_col2:
+        stop_test = st.button("⏹ 終了・採点", use_container_width=True, disabled=not st.session_state["is_recording"])
+else:
+    start_test = False
+    stop_test = False
 
 # ------------------------------------------------------------
 # テスト (採点) 制御と結果表示
