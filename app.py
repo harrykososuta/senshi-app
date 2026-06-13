@@ -88,6 +88,11 @@ st.markdown(
         div[data-testid="stElementContainer"] {
             margin-bottom: 0.15rem !important;
         }
+        /* カメラ映像（webrtc_streamer の iframe）の高さをスマホ画面に収まるように制限 */
+        .block-container iframe {
+            max-height: 220px !important;
+            height: 220px !important;
+        }
     }
     </style>
     """,
